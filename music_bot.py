@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 import time
 import urllib.parse
+import re
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -52,8 +53,7 @@ TEXTS = {
 **Источники поиска:**
 • YouTube (через yt-dlp)
 • Zaycev.net (русскоязычная музыка)
-• SoundCloud (независимые артисты)
-• Free Music Archive (лицензионная музыка)
+• Альтернативные источники
 
 **Как пользоваться:**
 Просто напишите название трека или исполнителя
@@ -61,7 +61,7 @@ TEXTS = {
 **Примеры:**
 • Imagine Dragons Radioactive
 • The Beatles Hey Jude
-• Билан Дима Нео
+• Монеточка Каждый раз
 • Miyagi Kosandra
 
 Выберите действие:""",
@@ -74,8 +74,7 @@ TEXTS = {
 **Источники поиска (по порядку):**
 1. 🎥 **YouTube** - самая большая база треков
 2. 🎵 **Zaycev.net** - русскоязычная и мировая музыка
-3. 🎧 **SoundCloud** - независимые артисты и ремиксы
-4. 📻 **Free Music Archive** - лицензионная музыка
+3. 🔍 **Альтернативные источники** - дополнительные площадки
 
 **Примеры запросов:**
 • "Imagine Dragons Radioactive"
@@ -120,18 +119,17 @@ TEXTS = {
 • Billie Eilish bad guy
 
 **Источники поиска:**
-🎥 YouTube → 🎵 Zaycev.net → 🎧 SoundCloud → 📻 FMA
+🎥 YouTube → 🎵 Zaycev.net → 🔍 Альтернативные
 
 Я найду трек на одной из площадок и отправлю аудиофайл.""",
 
     "searching_youtube": "🎥 Ищу на **YouTube**: {}",
     "searching_zaycev": "🎵 Ищу на **Zaycev.net**: {}",
-    "searching_soundcloud": "🎧 Ищу на **SoundCloud**: {}",
-    "searching_fma": "📻 Ищу в **Free Music Archive**: {}",
+    "searching_alternative": "🔍 Ищу в **альтернативных источниках**: {}",
     "downloading": "📥 Скачиваю с **{}**: {}",
     "sending": "📤 Отправляю: {}",
     "found_on": "✅ Найдено на: **{}**",
-    "not_found_anywhere": "❌ Не найден: **{}**\n\n🔍 Поиск выполнен на всех площадках:\n• YouTube\n• Zaycev.net\n• SoundCloud\n• Free Music Archive\n\nПопробуйте:\n• Изменить запрос\n• Добавить имя исполнителя\n• Написать на английском/русском",
+    "not_found_anywhere": "❌ Не найден: **{}**\n\n🔍 Поиск выполнен на всех площадках:\n• YouTube\n• Zaycev.net\n• Альтернативные источники\n\nПопробуйте:\n• Изменить запрос\n• Добавить имя исполнителя\n• Написать на английском/русском",
     "too_short": "❌ Слишком короткий запрос. Напишите хотя бы 2 символа.",
     "too_long": "❌ Слишком длинный запрос. Максимум 100 символов.",
     "too_long_track": "❌ Трек слишком длинный (больше 10 минут)",
@@ -146,7 +144,12 @@ class MultiSourceDownloader:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         })
 
     async def search_youtube(self, query: str) -> Optional[str]:
@@ -165,6 +168,7 @@ class MultiSourceDownloader:
                 'audioquality': '192',
                 'prefer_ffmpeg': True,
                 'keepvideo': False,
+                'socket_timeout': 30,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
@@ -178,12 +182,17 @@ class MultiSourceDownloader:
                 info = ydl.extract_info(search_query, download=False)
 
                 if not info or not info.get('entries'):
+                    logger.warning(f"YouTube: No results for {query}")
                     return None
 
                 video_info = info['entries'][0]
                 duration = video_info.get('duration', 0)
+                title = video_info.get('title', 'Unknown')
+
+                logger.info(f"YouTube found: {title} ({duration}s)")
 
                 if duration and duration > MAX_DURATION:
+                    logger.warning(f"YouTube: Track too long {duration}s")
                     return "TOO_LONG"
 
                 ydl.download([video_info['webpage_url']])
@@ -191,12 +200,16 @@ class MultiSourceDownloader:
                 mp3_file = f"{output_path}.mp3"
                 if os.path.exists(mp3_file):
                     file_size = os.path.getsize(mp3_file)
+                    logger.info(f"YouTube: Downloaded {file_size} bytes")
+
                     if file_size <= MAX_FILE_SIZE:
                         return mp3_file
                     else:
                         os.remove(mp3_file)
+                        logger.warning(f"YouTube: File too large {file_size}")
                         return "TOO_BIG"
 
+                logger.warning("YouTube: MP3 file not found after processing")
                 return None
 
         except Exception as e:
@@ -204,51 +217,92 @@ class MultiSourceDownloader:
             return None
 
     async def search_zaycev(self, query: str) -> Optional[str]:
-        """Поиск на Zaycev.net"""
+        """Улучшенный поиск на Zaycev.net"""
         try:
             logger.info(f"Zaycev search: {query}")
 
-            # Поиск трека
+            # Поиск трека с улучшенным парсингом
             search_url = f"https://zaycev.net/search.html?query_search={urllib.parse.quote(query)}"
-            response = self.session.get(search_url, timeout=15)
+            logger.debug(f"Zaycev search URL: {search_url}")
+
+            response = self.session.get(search_url, timeout=20)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Ищем первый трек в результатах
-            track_links = soup.select('div.musicset-track a.musicset-track__link')
-            if not track_links:
+            # Ищем треки в результатах поиска (обновленные селекторы)
+            track_elements = soup.select('div.musicset__item')
+            if not track_elements:
+                # Альтернативные селекторы
+                track_elements = soup.select('div.music-item')
+            if not track_elements:
+                track_elements = soup.select('div[class*="track"]')
+
+            if not track_elements:
+                logger.warning(f"Zaycev: No track elements found for {query}")
                 return None
 
-            track_url = "https://zaycev.net" + track_links[0].get('href')
+            # Берем первый найденный трек
+            track_element = track_elements[0]
+
+            # Ищем ссылку на трек
+            track_link = track_element.select_one('a[href*="/music/"]')
+            if not track_link:
+                track_link = track_element.select_one('a[href*="/pages/"]')
+
+            if not track_link:
+                logger.warning("Zaycev: No track link found")
+                return None
+
+            track_url = track_link.get('href')
+            if track_url.startswith('/'):
+                track_url = "https://zaycev.net" + track_url
+
+            logger.debug(f"Zaycev track URL: {track_url}")
 
             # Переходим на страницу трека
-            track_response = self.session.get(track_url, timeout=15)
+            track_response = self.session.get(track_url, timeout=20)
             track_response.raise_for_status()
 
             track_soup = BeautifulSoup(track_response.text, 'html.parser')
 
-            # Ищем ссылку на скачивание
+            # Ищем ссылку на скачивание MP3 (множественные варианты)
             download_link = None
 
-            # Вариант 1: прямая ссылка на MP3
-            audio_element = track_soup.select_one('audio source')
+            # Вариант 1: прямая ссылка в audio теге
+            audio_element = track_soup.select_one('audio source[src*=".mp3"]')
             if audio_element:
                 download_link = audio_element.get('src')
+                logger.debug(f"Zaycev: Found audio source {download_link}")
 
-            # Вариант 2: кнопка скачивания
+            # Вариант 2: data-url атрибут
+            if not download_link:
+                data_element = track_soup.select_one('[data-url*=".mp3"]')
+                if data_element:
+                    download_link = data_element.get('data-url')
+                    logger.debug(f"Zaycev: Found data-url {download_link}")
+
+            # Вариант 3: кнопка скачивания
             if not download_link:
                 download_btn = track_soup.select_one('a[href*=".mp3"]')
                 if download_btn:
                     download_link = download_btn.get('href')
+                    logger.debug(f"Zaycev: Found download button {download_link}")
 
-            # Вариант 3: data-url атрибут
+            # Вариант 4: JavaScript переменные
             if not download_link:
-                data_url = track_soup.select_one('[data-url*=".mp3"]')
-                if data_url:
-                    download_link = data_url.get('data-url')
+                script_tags = track_soup.find_all('script')
+                for script in script_tags:
+                    if script.string and '.mp3' in script.string:
+                        # Ищем ссылки на MP3 в JavaScript
+                        mp3_matches = re.findall(r'["']([^"']*\.mp3[^"']*)["']', script.string)
+                        if mp3_matches:
+                            download_link = mp3_matches[0]
+                            logger.debug(f"Zaycev: Found in JS {download_link}")
+                            break
 
             if not download_link:
+                logger.warning("Zaycev: No download link found")
                 return None
 
             # Нормализуем ссылку
@@ -256,6 +310,10 @@ class MultiSourceDownloader:
                 download_link = 'https:' + download_link
             elif download_link.startswith('/'):
                 download_link = 'https://zaycev.net' + download_link
+            elif not download_link.startswith('http'):
+                download_link = 'https://zaycev.net/' + download_link
+
+            logger.info(f"Zaycev: Downloading from {download_link}")
 
             # Скачиваем файл
             output_path = os.path.join(TEMP_DIR, f"zaycev_{int(time.time())}.mp3")
@@ -263,14 +321,29 @@ class MultiSourceDownloader:
             audio_response = self.session.get(download_link, timeout=30, stream=True)
             audio_response.raise_for_status()
 
+            # Проверяем, что получили аудиофайл
+            content_type = audio_response.headers.get('content-type', '').lower()
+            if 'audio' not in content_type and 'application/octet-stream' not in content_type:
+                logger.warning(f"Zaycev: Invalid content type {content_type}")
+                return None
+
             with open(output_path, 'wb') as f:
                 for chunk in audio_response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
 
             # Проверяем размер файла
-            if os.path.getsize(output_path) > MAX_FILE_SIZE:
+            file_size = os.path.getsize(output_path)
+            logger.info(f"Zaycev: Downloaded {file_size} bytes")
+
+            if file_size < 1000:  # Слишком маленький файл
                 os.remove(output_path)
+                logger.warning("Zaycev: File too small, probably error page")
+                return None
+
+            if file_size > MAX_FILE_SIZE:
+                os.remove(output_path)
+                logger.warning(f"Zaycev: File too large {file_size}")
                 return "TOO_BIG"
 
             return output_path
@@ -279,136 +352,79 @@ class MultiSourceDownloader:
             logger.error(f"Zaycev search error: {e}")
             return None
 
-    async def search_soundcloud(self, query: str) -> Optional[str]:
-        """Поиск на SoundCloud через yt-dlp"""
+    async def search_alternative(self, query: str) -> Optional[str]:
+        """Поиск в альтернативных источниках"""
         try:
-            logger.info(f"SoundCloud search: {query}")
-            output_path = os.path.join(TEMP_DIR, f"sc_{int(time.time())}")
+            logger.info(f"Alternative search: {query}")
 
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': f'{output_path}.%(ext)s',
-                'quiet': True,
-                'no_warnings': True,
-                'extractaudio': True,
-                'audioformat': 'mp3',
-                'audioquality': '192',
-                'prefer_ffmpeg': True,
-            }
+            # Попробуем другие источники через yt-dlp
+            sources = [
+                f"ytsearch1:{query} site:soundcloud.com",
+                f"ytsearch1:{query} audio",
+                f"ytsearch1:{query} music"
+            ]
 
-            # Поиск на SoundCloud
-            search_query = f"scsearch1:{query}"
+            for search_query in sources:
+                try:
+                    output_path = os.path.join(TEMP_DIR, f"alt_{int(time.time())}")
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(search_query, download=False)
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'outtmpl': f'{output_path}.%(ext)s',
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extractaudio': True,
+                        'audioformat': 'mp3',
+                        'audioquality': '192',
+                        'prefer_ffmpeg': True,
+                        'socket_timeout': 20,
+                    }
 
-                if not info or not info.get('entries'):
-                    return None
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(search_query, download=False)
 
-                track_info = info['entries'][0]
-                duration = track_info.get('duration', 0)
+                        if not info or not info.get('entries'):
+                            continue
 
-                if duration and duration > MAX_DURATION:
-                    return "TOO_LONG"
+                        track_info = info['entries'][0]
+                        duration = track_info.get('duration', 0)
 
-                ydl.download([track_info['webpage_url']])
+                        if duration and duration > MAX_DURATION:
+                            continue
 
-                mp3_file = f"{output_path}.mp3"
-                if os.path.exists(mp3_file):
-                    file_size = os.path.getsize(mp3_file)
-                    if file_size <= MAX_FILE_SIZE:
-                        return mp3_file
-                    else:
-                        os.remove(mp3_file)
-                        return "TOO_BIG"
+                        ydl.download([track_info['webpage_url']])
 
-                return None
+                        mp3_file = f"{output_path}.mp3"
+                        if os.path.exists(mp3_file):
+                            file_size = os.path.getsize(mp3_file)
+                            if file_size <= MAX_FILE_SIZE:
+                                logger.info(f"Alternative: Found via {search_query}")
+                                return mp3_file
+                            else:
+                                os.remove(mp3_file)
 
-        except Exception as e:
-            logger.error(f"SoundCloud search error: {e}")
+                except Exception as e:
+                    logger.debug(f"Alternative source failed: {e}")
+                    continue
+
             return None
 
-    async def search_free_music_archive(self, query: str) -> Optional[str]:
-        """Поиск в Free Music Archive"""
-        try:
-            logger.info(f"FMA search: {query}")
-
-            # Поиск через API FMA (упрощенная версия)
-            search_url = f"https://freemusicarchive.org/search/?q={urllib.parse.quote(query)}&limit=1"
-            response = self.session.get(search_url, timeout=15)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Ищем ссылку на трек
-            track_link = soup.select_one('a[href*="/music/"]')
-            if not track_link:
-                return None
-
-            track_url = "https://freemusicarchive.org" + track_link.get('href')
-
-            # Переходим на страницу трека
-            track_response = self.session.get(track_url, timeout=15)
-            track_response.raise_for_status()
-
-            track_soup = BeautifulSoup(track_response.text, 'html.parser')
-
-            # Ищем прямую ссылку на MP3
-            download_link = None
-
-            # Ищем аудио элемент
-            audio_element = track_soup.select_one('audio source[src*=".mp3"]')
-            if audio_element:
-                download_link = audio_element.get('src')
-
-            # Ищем ссылку на скачивание
-            if not download_link:
-                download_btn = track_soup.select_one('a[href*=".mp3"]')
-                if download_btn:
-                    download_link = download_btn.get('href')
-
-            if not download_link:
-                return None
-
-            # Нормализуем ссылку
-            if download_link.startswith('/'):
-                download_link = 'https://freemusicarchive.org' + download_link
-
-            # Скачиваем файл
-            output_path = os.path.join(TEMP_DIR, f"fma_{int(time.time())}.mp3")
-
-            audio_response = self.session.get(download_link, timeout=30, stream=True)
-            audio_response.raise_for_status()
-
-            with open(output_path, 'wb') as f:
-                for chunk in audio_response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-
-            # Проверяем размер файла
-            if os.path.getsize(output_path) > MAX_FILE_SIZE:
-                os.remove(output_path)
-                return "TOO_BIG"
-
-            return output_path
-
         except Exception as e:
-            logger.error(f"FMA search error: {e}")
+            logger.error(f"Alternative search error: {e}")
             return None
 
     async def download_track(self, query: str, status_callback=None) -> tuple[Optional[str], str]:
         """Основная функция поиска по всем источникам"""
         sources = [
-            ("YouTube", self.search_youtube),
-            ("Zaycev.net", self.search_zaycev),
-            ("SoundCloud", self.search_soundcloud),
-            ("Free Music Archive", self.search_free_music_archive)
+            ("YouTube", "searching_youtube", self.search_youtube),
+            ("Zaycev.net", "searching_zaycev", self.search_zaycev),
+            ("Alternative", "searching_alternative", self.search_alternative)
         ]
 
-        for source_name, search_func in sources:
+        for source_name, status_key, search_func in sources:
             try:
                 if status_callback:
-                    await status_callback(f"searching_{source_name.lower().replace(' ', '_').replace('.', '')}", query)
+                    await status_callback(status_key, query)
 
                 result = await search_func(query)
 
@@ -417,10 +433,11 @@ class MultiSourceDownloader:
                 elif result == "TOO_BIG":
                     return "TOO_BIG", source_name
                 elif result and os.path.exists(result):
+                    logger.info(f"SUCCESS: Found on {source_name}")
                     return result, source_name
 
-                # Небольшая пауза между источниками
-                await asyncio.sleep(1)
+                # Пауза между источниками
+                await asyncio.sleep(2)
 
             except Exception as e:
                 logger.error(f"Error searching {source_name}: {e}")
@@ -514,18 +531,16 @@ async def process_music_search(message: Message, query: str, is_state: bool = Fa
         try:
             if status_key == "searching_youtube":
                 text = TEXTS["searching_youtube"].format(track_name)
-            elif status_key == "searching_zaycev_net":
+            elif status_key == "searching_zaycev":
                 text = TEXTS["searching_zaycev"].format(track_name)
-            elif status_key == "searching_soundcloud":
-                text = TEXTS["searching_soundcloud"].format(track_name)
-            elif status_key == "searching_free_music_archive":
-                text = TEXTS["searching_fma"].format(track_name)
+            elif status_key == "searching_alternative":
+                text = TEXTS["searching_alternative"].format(track_name)
             else:
                 text = f"🔍 Ищу: **{track_name}**"
 
             await status_msg.edit_text(text, parse_mode="Markdown")
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Status update error: {e}")
 
     try:
         # Поиск по всем источникам
@@ -593,7 +608,7 @@ async def direct_search_handler(message: Message):
 async def main():
     """Запуск бота"""
     try:
-        logger.info("🎵 Starting Multi-Source Music Bot...")
+        logger.info("🎵 Starting Fixed Multi-Source Music Bot...")
 
         # Проверка обязательных настроек
         if not BOT_TOKEN:
@@ -611,7 +626,7 @@ async def main():
             logger.info("✅ FFmpeg found")
 
         logger.info("🚀 Bot started successfully!")
-        logger.info("🌐 Available sources: YouTube, Zaycev.net, SoundCloud, Free Music Archive")
+        logger.info("🌐 Available sources: YouTube, Zaycev.net, Alternative sources")
 
         await dp.start_polling(bot, skip_updates=True)
 
