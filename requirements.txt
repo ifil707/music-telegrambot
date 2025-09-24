@@ -1,7 +1,6 @@
-beautifulsoup4
 aiogram
 yt-dlp
-vk-api
-yandex-music
 python-dotenv
 ffmpeg-python
+requests
+beautifulsoup4
