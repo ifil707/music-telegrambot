@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  music-bot:
+    build: .
+    container_name: music-telegram-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - VK_ACCESS_TOKEN=${VK_ACCESS_TOKEN}
+      - YANDEX_TOKEN=${YANDEX_TOKEN}
+    volumes:
+      - ./temp:/tmp/music_bot
+      - ./logs:/app/logs
+    networks:
+      - music-bot-network
+
+networks:
+  music-bot-network:
+    driver: bridge

@@ -1,0 +1,10 @@
+{
+  "build": {
+    "builder": "DOCKERFILE"
+  },
+  "deploy": {
+    "startCommand": "python music_bot.py",
+    "restartPolicyType": "always",
+    "replicas": 1
+  }
+}
