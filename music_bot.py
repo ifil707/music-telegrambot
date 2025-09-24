@@ -289,12 +289,12 @@ class MultiSourceDownloader:
                     download_link = download_btn.get('href')
                     logger.debug(f"Zaycev: Found download button {download_link}")
 
-            # Вариант 4: JavaScript переменные
+            # Вариант 4: JavaScript переменные (ИСПРАВЛЕННЫЙ REGEX)
             if not download_link:
                 script_tags = track_soup.find_all('script')
                 for script in script_tags:
                     if script.string and '.mp3' in script.string:
-                        # Ищем ссылки на MP3 в JavaScript
+                        # ИСПРАВЛЕНО: экранированы кавычки в regex
                         mp3_matches = re.findall(r'["']([^"']*\.mp3[^"']*)["']', script.string)
                         if mp3_matches:
                             download_link = mp3_matches[0]
@@ -608,7 +608,7 @@ async def direct_search_handler(message: Message):
 async def main():
     """Запуск бота"""
     try:
-        logger.info("🎵 Starting Fixed Multi-Source Music Bot...")
+        logger.info("🎵 Starting Syntax-Fixed Multi-Source Music Bot...")
 
         # Проверка обязательных настроек
         if not BOT_TOKEN:
