@@ -295,7 +295,7 @@ class MultiSourceDownloader:
                 for script in script_tags:
                     if script.string and '.mp3' in script.string:
                         # ИСПРАВЛЕНО: экранированы кавычки в regex
-                        mp3_matches = re.findall(r'["']([^"']*\.mp3[^"']*)["']', script.string)
+                        mp3_matches = re.findall(r'["\']([^"\']*\.mp3[^"\']*)["\']', script.string)
                         if mp3_matches:
                             download_link = mp3_matches[0]
                             logger.debug(f"Zaycev: Found in JS {download_link}")
